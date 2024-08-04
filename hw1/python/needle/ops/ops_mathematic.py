@@ -143,22 +143,13 @@ def divide_scalar(a, scalar):
 
 class Transpose(TensorOp):
     def __init__(self, axes: Optional[tuple] = None):
-        self.axis1 = None
-        self.axis2 = None
-        if axes is not None:
-            self.axis1 = axes[0]
-            self.axis2 = axes[1]
+        self.axes = axes
 
     def compute(self, a):
-        new_axes = array_api.arange(a.ndim)
-        if(a.ndim < 2):
-            return a
-        if self.axis1 is None and self.axis2 is None:
-            new_axes[-2], new_axes[-1] = new_axes[-1], new_axes[-2]
-            return array_api.transpose(a, axes=new_axes)
-        new_axes[self.axis1] = self.axis2
-        new_axes[self.axis2] = self.axis1
-        return array_api.transpose(a, axes=new_axes)
+        if self.axes is None:
+            return array_api.swapaxes(a, a.ndim - 1, a.ndim - 2)
+        else:
+            return array_api.swapaxes(a, self.axes[0], self.axes[1])
 
     def gradient(self, out_grad, node):
         return transpose(out_grad, axes=self.axes)
@@ -176,9 +167,8 @@ class Reshape(TensorOp):
         return array_api.reshape(a, self.shape)
 
     def gradient(self, out_grad, node):
-        ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
-        ### END YOUR SOLUTION
+        # 还原shape
+        return reshape(out_grad, node.inputs[0].shape)
 
 
 def reshape(a, shape):
@@ -193,9 +183,16 @@ class BroadcastTo(TensorOp):
         return array_api.broadcast_to(a, self.shape)
 
     def gradient(self, out_grad, node):
-        ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
-        ### END YOUR SOLUTION
+        # (1) -> (3,3,3) : 广播了所有列(0,1,2)
+        # 注意广播只能由1广播到对应的shape，不能由3广播到1
+        origin_shape = node.inputs[0].shape
+        shrink_axes = [i for i in range(len(self.shape))]
+        for i, origin_dim in enumerate(reversed(origin_shape)):
+            cur_dim = self.shape[-1 - i]
+            if cur_dim == origin_dim:
+                shrink_axes[-1 - i] = None
+        shrink_axes = tuple(filter(lambda x: x is not None, shrink_axes))
+        return summation(out_grad, axes=shrink_axes).reshape(origin_shape)
 
 
 def broadcast_to(a, shape):
@@ -210,7 +207,16 @@ class Summation(TensorOp):
         return array_api.sum(a, axis=self.axes)
 
     def gradient(self, out_grad, node):
-        return broadcast_to(out_grad, node.inputs[0].shape)
+        origin_shape = node.inputs[0].shape
+        temp_shape = list(origin_shape)
+        if self.axes is None:
+            temp_shape = [1 for _ in range(len(origin_shape))]
+        else:
+            for i in self.axes:
+                temp_shape[i] = 1
+        temp_shape = tuple(temp_shape)
+        out_grad = reshape(out_grad, temp_shape)
+        return broadcast_to(out_grad, origin_shape)
 
 
 def summation(a, axes=None):
@@ -223,8 +229,14 @@ class MatMul(TensorOp):
 
     def gradient(self, out_grad, node):
         a, b = node.inputs[0], node.inputs[1]
-        return array_api.matmul(out_grad, transpose(b)), array_api.matmul(transpose(a), out_grad)
-
+        a_t, b_t = transpose(a), transpose(b)
+        grad_a = matmul(out_grad, b_t)
+        grad_b = matmul(a_t, out_grad)
+        if(len(grad_a.shape) > len(a.shape)):
+            grad_a = summation(grad_a, axes=tuple(range(len(grad_a.shape) - len(a.shape))))
+        if(len(grad_b.shape) > len(b.shape)):
+            grad_b = summation(grad_b, axes=tuple(range(len(grad_b.shape) - len(b.shape))))
+        return grad_a, grad_b
 
 def matmul(a, b):
     return MatMul()(a, b)
@@ -235,9 +247,7 @@ class Negate(TensorOp):
         return -a
 
     def gradient(self, out_grad, node):
-        ### BEGIN YOUR SOLUTION
-        raise NotImplementedError()
-        ### END YOUR SOLUTION
+        return -out_grad
 
 
 def negate(a):
